@@ -16,8 +16,8 @@ python -m pip install -r requirements.txt
 4. `.env` доторх `your_api_key_here` хэсгийг өөрийн түлхүүрээр солино.
 
 ```text
-GEMINI_API_KEY=AQ.Ab8RN6L2v01_gAfTs25fjdGcWtz9KQzFxepoWe127PTvZKdRqg
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=gemini-3.6-flash
 ```
 
 API key-ээ GitHub, тайлан, screenshot эсвэл бусад хүнд өгч болохгүй.
@@ -25,7 +25,7 @@ API key-ээ GitHub, тайлан, screenshot эсвэл бусад хүнд ө�
 ## 3. Систем ажиллуулах
 
 ```powershell
-python -m streamlit run app.py
+python -m streamlit run app.py --client.toolbarMode viewer
 ```
 
 Туршилтын админ:
@@ -42,6 +42,11 @@ python -m streamlit run app.py
 3. Зөвхөн олдсон хэсгүүдийг Gemini API руу илгээнэ.
 4. Хариултын доор файл болон хуудасны эх сурвалжийг харуулна.
 5. Баримтад мэдээлэл байхгүй бол хариулт зохиохгүй.
+6. **Шинэ чат** товчоор өмнөх яриаг устгахгүйгээр шинэ чат эхлүүлнэ.
+7. **Чатын түүх** хэсгээс өмнөх яриагаа сонгон үргэлжлүүлж болно.
+
+Чатын түүх хэрэглэгч тус бүрээр SQLite өгөгдлийн санд хадгалагдана. Шинэ
+хүснэгтүүдийг `app.py` анх ажиллахдаа автоматаар үүсгэх тул XAMPP хэрэггүй.
 
 Google Search болон бусад интернет хайлт холбогдоогүй. Гэхдээ Gemini-ийн үнэгүй API
 ашиглах үед илгээсэн хэсгүүд Google-ийн сервер рүү дамжина. Иймээс үнэгүй хувилбарт
