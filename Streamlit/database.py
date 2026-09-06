@@ -1,9 +1,13 @@
 import sqlite3 # SQLite санг ашиглахад хэрэглэдэг
 import hashlib
+from pathlib import Path
+
+
+DB_PATH = Path(__file__).resolve().parent / "dms_system.db"
 
 def init_db():
     # 'dms_system.db' нэртэй файл үүсгэнэ
-    conn = sqlite3.connect('dms_system.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     # 1. ROLES хүснэгт
@@ -84,6 +88,46 @@ def init_db():
         FOREIGN KEY (user_id) REFERENCES users (id),
         FOREIGN KEY (document_id) REFERENCES documents (id)
     )''')
+
+    # 9. CHAT_SESSIONS хүснэгт
+    # Added by Ochir: хэрэглэгч бүрийн тусдаа чатын жагсаалтыг хадгална.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT 'Шинэ чат',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )''')
+
+    # 10. CHAT_MESSAGES хүснэгт
+    # Added by Ochir: асуулт, AI хариулт болон эх сурвалжийн JSON-ийг хадгална.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        sources_json TEXT NOT NULL DEFAULT '[]',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
+    )''')
+
+    # 11. CHAT_SESSION_DOCUMENTS хүснэгт
+    # Added by Ochir: тухайн чатад сонгосон баримтуудыг дахин нээхэд сэргээнэ.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS chat_session_documents (
+        session_id INTEGER NOT NULL,
+        document_id INTEGER NOT NULL,
+        PRIMARY KEY (session_id, document_id),
+        FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE,
+        FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
+    )''')
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, updated_at)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id)"
+    )
 
     # --- АНХНЫ АДМИН ХЭРЭГЛЭГЧИЙГ АВТОМАТААР ҮҮСГЭХ ---
     # Нууц үгийг sha256 ашиглан hash хийнэ (Жишээ нь нууц үг: admin123)

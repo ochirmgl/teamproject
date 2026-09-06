@@ -102,6 +102,43 @@ class RAGError(RuntimeError):
     """Raised when the document chat cannot complete safely."""
 
 
+# Added by Ochir: Gemini 3.x can use part of the output allowance for internal
+# reasoning. Minimal thinking leaves enough room for the visible document answer.
+# The fallback also supports older google-genai package versions.
+def _minimal_thinking_config(types):
+    try:
+        thinking_level_type = getattr(types, "ThinkingLevel", None)
+        minimal_level = (
+            getattr(thinking_level_type, "MINIMAL", "minimal")
+            if thinking_level_type
+            else "minimal"
+        )
+        return types.ThinkingConfig(thinking_level=minimal_level)
+    except (TypeError, ValueError):
+        return types.ThinkingConfig(thinking_budget=0)
+
+
+# Added by Ochir: detect provider-side truncation instead of displaying a
+# response that ends in the middle of a word or sentence.
+def _finish_reason_name(response) -> str:
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return ""
+    finish_reason = getattr(candidates[0], "finish_reason", None)
+    if finish_reason is None:
+        return ""
+    return str(getattr(finish_reason, "name", finish_reason)).upper()
+
+
+# Added by Ochir: some provider responses have no usable finish reason. In that
+# case a longer answer without final punctuation is treated as probably cut off.
+def _looks_incomplete_answer(answer_text: str) -> bool:
+    text = answer_text.rstrip()
+    if len(text) < 240:
+        return False
+    return re.search(r"[.!?…\]\)\}\"'”’]$", text) is None
+
+
 @dataclass(frozen=True)
 class DocumentChunk:
     document_id: int
@@ -549,10 +586,11 @@ Question: {question}
                 model=model,
                 contents=rewrite_prompt,
                 config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    max_output_tokens=220,
+                    thinking_config=_minimal_thinking_config(types),
+                    max_output_tokens=512,
                 ),
             )
+
             rewritten = _normalise_text(response.text or "")
             if rewritten:
                 return f"{question}\n{rewritten}"
@@ -665,10 +703,35 @@ WORKSPACE МЭДЭЭЛЭЛ:
                 model=model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=2500,
+                    thinking_config=_minimal_thinking_config(types),
+                    max_output_tokens=8192,
                 ),
             )
+
+            # Added by Ochir: retry once with a shorter complete-answer request
+            # when Gemini reports MAX_TOKENS. This prevents three-line or
+            # half-sentence answers from being saved in chat history.
+            first_answer_text = (response.text or "").strip()
+            if (
+                "MAX_TOKENS" in _finish_reason_name(response)
+                or _looks_incomplete_answer(first_answer_text)
+            ):
+                retry_prompt = f"""
+{prompt}
+
+НЭМЭЛТ ШААРДЛАГА:
+Өмнөх оролдлого token-ийн хязгаарт хүрч өгүүлбэрийн дунд тасарсан.
+Хариултыг эхнээс нь дахин бич. 500 үгээс хэтрүүлэхгүй, уялдаатай богино
+догол мөрүүдтэй байлгаж, бүх өгүүлбэр болон эцсийн дүгнэлтийг бүрэн дуусга.
+""".strip()
+                response = client.models.generate_content(
+                    model=model,
+                    contents=retry_prompt,
+                    config=types.GenerateContentConfig(
+                        thinking_config=_minimal_thinking_config(types),
+                        max_output_tokens=8192,
+                    ),
+                )
             answer_text = (response.text or "").strip()
         except Exception as exc:
             raise RAGError(f"Gemini API дуудлага амжилтгүй боллоо: {exc}") from exc

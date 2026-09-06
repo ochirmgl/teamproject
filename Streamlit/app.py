@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import json
 # Added by Ochir: pathlib is used so database and uploaded-file paths work
 # correctly even when Streamlit is launched from a different directory.
 from pathlib import Path
@@ -37,12 +38,59 @@ def open_database():
     return sqlite3.connect(DB_PATH)
 
 
+# Added by Ochir: existing teammate databases are upgraded automatically when
+# app.py starts. The old tables and their data are not deleted or replaced.
+def ensure_chat_schema():
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT 'Шинэ чат',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        )"""
+    )
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+            content TEXT NOT NULL,
+            sources_json TEXT NOT NULL DEFAULT '[]',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
+        )"""
+    )
+    cursor.execute(
+        """CREATE TABLE IF NOT EXISTS chat_session_documents (
+            session_id INTEGER NOT NULL,
+            document_id INTEGER NOT NULL,
+            PRIMARY KEY (session_id, document_id),
+            FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE,
+            FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
+        )"""
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, updated_at)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id)"
+    )
+    conn.commit()
+    conn.close()
+
+
 def local_file_path(stored_path):
     """Added by Ochir: resolve database file paths safely on Windows/POSIX."""
     return resolve_document_path(BASE_DIR, stored_path)
 
 # Page тохиргоо (Wide layout, icon)
 st.set_page_config(page_title="DMS System", page_icon="📁", layout="wide")
+ensure_chat_schema()
 
 # ==========================================
 # 🎨 ЗАГВАР САЙЖРУУЛАХ CUSTOM CSS (ЗАСВАР ОРСОН)
@@ -71,6 +119,16 @@ st.markdown("""
             border: 1px solid #dbe4ee;
             border-radius: 12px;
             padding: 8px 12px;
+        }
+
+        /* Added by Ochir: never collapse an AI answer to a fixed number of lines. */
+        [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"],
+        [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p {
+            max-height: none !important;
+            overflow: visible !important;
+            display: block !important;
+            -webkit-line-clamp: unset !important;
+            white-space: normal !important;
         }
         
         /* Хажуугийн цэсний дэвсгэр */
@@ -138,6 +196,10 @@ if 'role' not in st.session_state:
 # Added by Ochir: AI чатын түүхийг тухайн session-д хадгалах.
 if 'chat_messages' not in st.session_state:
     st.session_state.chat_messages = []
+if 'active_chat_session_id' not in st.session_state:
+    st.session_state.active_chat_session_id = None
+if 'loaded_chat_session_id' not in st.session_state:
+    st.session_state.loaded_chat_session_id = None
 
 
 # ==================== ADDED BY OCHIR: AI CHAT HELPERS ====================
@@ -205,6 +267,144 @@ def current_user_id():
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# Added by Ochir: persistent, user-specific chat history stored in SQLite.
+def create_chat_session(user_id):
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO chat_sessions (user_id, title) VALUES (?, ?)",
+        (user_id, "Шинэ чат"),
+    )
+    session_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return session_id
+
+
+def list_chat_sessions(user_id):
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT s.id, s.title, s.updated_at, COUNT(m.id)
+           FROM chat_sessions AS s
+           LEFT JOIN chat_messages AS m ON m.session_id = s.id
+           WHERE s.user_id = ?
+           GROUP BY s.id, s.title, s.updated_at
+           ORDER BY s.updated_at DESC, s.id DESC""",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "updated_at": row[2],
+            "message_count": row[3],
+        }
+        for row in rows
+    ]
+
+
+def load_chat_messages(session_id, user_id):
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT m.role, m.content, m.sources_json
+           FROM chat_messages AS m
+           JOIN chat_sessions AS s ON s.id = m.session_id
+           WHERE m.session_id = ? AND s.user_id = ?
+           ORDER BY m.id""",
+        (session_id, user_id),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    messages = []
+    for role, content, sources_json in rows:
+        try:
+            sources = json.loads(sources_json or "[]")
+        except (TypeError, json.JSONDecodeError):
+            sources = []
+        messages.append({"role": role, "content": content, "sources": sources})
+    return messages
+
+
+def save_chat_message(session_id, user_id, role, content, sources=None):
+    if role not in {"user", "assistant"}:
+        return
+
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT title FROM chat_sessions WHERE id = ? AND user_id = ?",
+        (session_id, user_id),
+    )
+    session_row = cursor.fetchone()
+    if session_row is None:
+        conn.close()
+        return
+
+    cursor.execute(
+        """INSERT INTO chat_messages (session_id, role, content, sources_json)
+           VALUES (?, ?, ?, ?)""",
+        (session_id, role, content, json.dumps(sources or [], ensure_ascii=False)),
+    )
+
+    if role == "user" and session_row[0] == "Шинэ чат":
+        title = " ".join(content.split())[:60] or "Шинэ чат"
+        cursor.execute(
+            "UPDATE chat_sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (title, session_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE chat_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (session_id,),
+        )
+    conn.commit()
+    conn.close()
+
+
+def load_chat_document_ids(session_id, user_id):
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT csd.document_id
+           FROM chat_session_documents AS csd
+           JOIN chat_sessions AS s ON s.id = csd.session_id
+           WHERE csd.session_id = ? AND s.user_id = ?
+           ORDER BY csd.document_id""",
+        (session_id, user_id),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
+def save_chat_document_ids(session_id, user_id, document_ids):
+    conn = open_database()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?",
+        (session_id, user_id),
+    )
+    if cursor.fetchone() is None:
+        conn.close()
+        return
+
+    cursor.execute(
+        "DELETE FROM chat_session_documents WHERE session_id = ?",
+        (session_id,),
+    )
+    cursor.executemany(
+        "INSERT INTO chat_session_documents (session_id, document_id) VALUES (?, ?)",
+        [(session_id, int(document_id)) for document_id in document_ids],
+    )
+    conn.commit()
+    conn.close()
 
 
 def save_chat_activity(question, source_document_id=None):
@@ -305,13 +505,13 @@ def answer_system_question(question, selected_document_ids, documents):
     return None
 # ================== END ADDED BY OCHIR: AI CHAT HELPERS ==================
 
+## --- ФАЙЛЫГ ШУУД ВЭБ ДЭЭР ХАРАХ (VIEWER DIALOG) ---
 # --- ФАЙЛЫГ ШУУД ВЭБ ДЭЭР ХАРАХ (VIEWER DIALOG) ---
 @st.dialog("👀 Баримт бичиг үзэх", width="large")
 def view_document_dialog(doc_title, file_path, file_type):
     st.markdown(f"<h3 style='color:#0284c7;'>📑 {doc_title}</h3>", unsafe_allow_html=True)
     st.markdown(f"<div class='doc-meta'>📂 Файлын төрөл: <b>{file_type}</b></div>", unsafe_allow_html=True)
 
-    # Added by Ochir: use the real project-relative path saved in the database.
     resolved_path = local_file_path(file_path)
     if resolved_path.exists():
         if "pdf" in file_type.lower():
@@ -319,16 +519,38 @@ def view_document_dialog(doc_title, file_path, file_type):
                 base64_pdf = base64.b64encode(f.read()).decode('utf-8')
             pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf" style="border-radius: 10px; border: 1px solid #ccc;"></iframe>'
             st.markdown(pdf_display, unsafe_allow_html=True)
+            
         elif any(img_type in file_type.lower() for img_type in ["image", "png", "jpg", "jpeg"]):
             st.image(str(resolved_path), use_container_width=True, clamp=True)
+            
         elif "text" in file_type.lower():
             with resolved_path.open("r", encoding="utf-8", errors="ignore") as f:
                 text_content = f.read()
             st.text_area("Агуулга:", text_content, height=400)
-        else:
-            st.info("Энэ төрлийн файлыг шууд урьдчилан харах боломжгүй байна. Татаж авч үзнэ үү.")
-    else:
-        st.error("Файл сервер дээр олдсонгүй.")
+            
+        # 👉 Word файлыг автоматаар PDF рүү хөрвүүлж вэб дээр харуулах (Засвар орсон)
+        elif "wordprocessingml" in file_type.lower() or resolved_path.suffix.lower() == ".docx":
+            try:
+                from docx2pdf import convert
+                import tempfile
+                import pythoncom
+                
+                # Windows COM thread алдаанаас сэргийлэх
+                pythoncom.CoInitialize()
+                
+                with tempfile.TemporaryDirectory() as tmpdirname:
+                    output_pdf_path = Path(tmpdirname) / f"{resolved_path.stem}.pdf"
+                    convert(str(resolved_path), str(output_pdf_path))
+                    
+                    if output_pdf_path.exists():
+                        with output_pdf_path.open("rb") as f:
+                            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="700px" type="application/pdf" style="border-radius: 10px; border: 1px solid #ccc;"></iframe>'
+                        st.markdown(pdf_display, unsafe_allow_html=True)
+                    else:
+                        st.error("PDF рүү хөрвүүлэхэд алдаа гарлаа.")
+            except Exception as e:
+                st.error(f"Word файлыг PDF болгож харагдуулахад алдаа гарлаа: {e}")
 
 # --- БАРИМТЫГ ЗАСАХ БОЛОН ФАЙЛЫГ НЬ СОЛИХ ПОПАП ЦОНХ ---
 @st.dialog("✏️ Баримтын мэдээлэл засах")
@@ -398,6 +620,10 @@ if st.session_state.logged_in:
             st.session_state.logged_in = False
             st.session_state.username = ""
             st.session_state.role = ""
+            st.session_state.chat_messages = []
+            st.session_state.active_chat_session_id = None
+            st.session_state.loaded_chat_session_id = None
+            st.session_state.pop("chat_history_selector", None)
             st.rerun()
 
     # ==========================================
@@ -579,15 +805,82 @@ if st.session_state.logged_in:
             "зохиож хариулахгүй."
         )
 
+        user_id = current_user_id()
+        if user_id is None:
+            st.error("Нэвтэрсэн хэрэглэгчийн мэдээлэл олдсонгүй.")
+            st.stop()
+
+        # Added by Ochir: "Чатыг цэвэрлэх"-ийн оронд шинэ чат болон
+        # SQLite-д хадгалагдсан өмнөх чатуудыг сонгох хэсэг.
+        sessions = list_chat_sessions(user_id)
+        session_ids = [session["id"] for session in sessions]
+        if st.session_state.active_chat_session_id not in session_ids:
+            if sessions:
+                st.session_state.active_chat_session_id = sessions[0]["id"]
+            else:
+                st.session_state.active_chat_session_id = create_chat_session(user_id)
+                sessions = list_chat_sessions(user_id)
+            st.session_state.loaded_chat_session_id = None
+
+        history_column, new_chat_column = st.columns([3, 1])
+        with new_chat_column:
+            st.write("")
+            if st.button(
+                "➕ Шинэ чат",
+                type="primary",
+                help="Өмнөх чатыг устгахгүйгээр шинэ хоосон чат нээнэ.",
+                use_container_width=True,
+            ):
+                st.session_state.active_chat_session_id = create_chat_session(user_id)
+                st.session_state.loaded_chat_session_id = None
+                st.session_state.chat_messages = []
+                st.session_state.pop("chat_history_selector", None)
+                st.rerun()
+
+        sessions = list_chat_sessions(user_id)
+        session_map = {session["id"]: session for session in sessions}
+        session_ids = list(session_map)
+        active_session_id = st.session_state.active_chat_session_id
+        active_index = session_ids.index(active_session_id)
+
+        with history_column:
+            selected_session_id = st.selectbox(
+                "Чатын түүх",
+                options=session_ids,
+                index=active_index,
+                format_func=lambda session_id: (
+                    f"{session_map[session_id]['title']} · "
+                    f"{session_map[session_id]['updated_at'][:16]}"
+                ),
+                key="chat_history_selector",
+            )
+
+        if selected_session_id != active_session_id:
+            st.session_state.active_chat_session_id = selected_session_id
+            st.session_state.loaded_chat_session_id = None
+            st.rerun()
+
+        active_session_id = st.session_state.active_chat_session_id
+        if st.session_state.loaded_chat_session_id != active_session_id:
+            st.session_state.chat_messages = load_chat_messages(active_session_id, user_id)
+            st.session_state.loaded_chat_session_id = active_session_id
+
         documents = fetch_chat_documents()
         document_map = {document["id"]: document["title"] for document in documents}
+        saved_document_ids = [
+            document_id
+            for document_id in load_chat_document_ids(active_session_id, user_id)
+            if document_id in document_map
+        ]
         selected_ids = st.multiselect(
             "Асуулт асуух баримтууд",
             options=list(document_map),
-            default=list(document_map),
+            default=saved_document_ids or list(document_map),
             format_func=lambda document_id: document_map[document_id],
             placeholder="Нэг эсвэл хэд хэдэн баримт сонгоно уу",
+            key=f"chat_documents_{active_session_id}",
         )
+        save_chat_document_ids(active_session_id, user_id, selected_ids)
 
         document_signature = make_document_signature(documents)
         rag_index = build_rag_index(document_signature)
@@ -596,7 +889,7 @@ if st.session_state.logged_in:
 
         # Added by Ochir: хэрэглэгчид ойлгомжгүй техникийн chunk count-ийг
         # дэлгэцээс хасаж, зөвхөн сонгосон баримт болон AI загварыг харуулна.
-        document_column, model_column, clear_column = st.columns([1, 1.4, 1])
+        document_column, model_column = st.columns([1, 1.4])
         document_column.metric(
             "Сонгосон баримт",
             len(selected_ids),
@@ -607,16 +900,6 @@ if st.session_state.logged_in:
             model,
             help="Баримтын хэсгүүдэд тулгуурлан хариулт боловсруулах Gemini загвар.",
         )
-        with clear_column:
-            st.write("")
-            if st.button(
-                "🗑️ Чатыг цэвэрлэх",
-                help="Одоогийн чатын түүхийг арилгана. Баримт болон database-д нөлөөлөхгүй.",
-                use_container_width=True,
-            ):
-                st.session_state.chat_messages = []
-                st.rerun()
-
         if rag_index.errors:
             with st.expander("⚠️ Уншиж чадаагүй файл"):
                 for error in rag_index.errors:
@@ -634,7 +917,7 @@ if st.session_state.logged_in:
 
         for message in st.session_state.chat_messages:
             with st.chat_message(message["role"]):
-                st.write(message["content"])
+                st.markdown(message["content"])
                 if message["role"] == "assistant":
                     render_chat_sources(message.get("sources", []))
 
@@ -647,8 +930,9 @@ if st.session_state.logged_in:
         if prompt:
             previous_messages = list(st.session_state.chat_messages)
             st.session_state.chat_messages.append({"role": "user", "content": prompt})
+            save_chat_message(active_session_id, user_id, "user", prompt)
             with st.chat_message("user"):
-                st.write(prompt)
+                st.markdown(prompt)
 
             source_payload = []
             with st.chat_message("assistant"):
@@ -674,7 +958,7 @@ if st.session_state.logged_in:
                             }
                             for source in sources
                         ]
-                    st.write(response)
+                    st.markdown(response)
                     render_chat_sources(source_payload)
                 except RAGError as error:
                     response = str(error)
@@ -684,6 +968,13 @@ if st.session_state.logged_in:
             save_chat_activity(prompt, first_document_id)
             st.session_state.chat_messages.append(
                 {"role": "assistant", "content": response, "sources": source_payload}
+            )
+            save_chat_message(
+                active_session_id,
+                user_id,
+                "assistant",
+                response,
+                source_payload,
             )
     # End added by Ochir: working document AI chat page.
 
