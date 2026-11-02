@@ -244,6 +244,8 @@ usually 8-30 words. Reserve enough output space to complete the JSON structure.
 Quotes are checked character by character against the source text, so copy them exactly;
 a shorter exact quote is better than a longer altered one.
 Each source has document_id: the #number users see. "File 4" or "#4" means document_id 4.
+Write every claim in the language of the question (Mongolian question -> Mongolian claims).
+Never write field names such as document_id, source_id or location in claim text.
 named_documents_without_matching_passage lists files the user named where local search found
 nothing relevant. Do not write claims about them; the application reports them itself.
 If the user asks which or how many documents contain something, give one claim per document
