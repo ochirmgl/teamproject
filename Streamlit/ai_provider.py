@@ -31,6 +31,9 @@ class AIConfig:
     free_tier_confirmed: bool = False
     daily_limit: int = 20
     max_output: int = 4096
+    # Characters of document text per request. Groq's free tier limits tokens
+    # per request/minute; Mongolian text uses many tokens (HTTP 413 when over).
+    max_source_chars: int = 20000
     user_daily_limit: int = 10
     last_response_kind: str = 'local'
 
@@ -43,6 +46,8 @@ def post_json(url, payload, headers=None):
         with urllib.request.urlopen(request,timeout=90) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
+        if exc.code == 413:
+            raise AIError('HTTP 413: Хүсэлт AI үйлчилгээний хэмжээний хязгаараас хэтэрлээ. Асуултаа нарийсгах эсвэл AI_MAX_SOURCE_CHARS тохиргоог багасгана уу.') from None
         if exc.code == 429:
             raise AIError('AI үйлчилгээний үнэгүй хэрэглээний хязгаарт хүрлээ. Дараа дахин оролдоно уу.') from None
         if exc.code == 401:

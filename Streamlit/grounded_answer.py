@@ -153,11 +153,14 @@ def answer(index, question, selected, history, config, user_id, db_path):
             # "How many / which files mention land?": check every file separately
             # so the answer can say which files actually contain the topic.
             document_question = True
-            for document_id in scope:
-                for source in index.retrieve(query, selected_document_ids=[document_id], limit=3):
-                    sources.append(dataclasses.replace(source, number=len(sources) + 1))
-            sources = sorted(sources, key=lambda source: -source.score)[:18]
-            sources = [dataclasses.replace(source, number=n) for n, source in enumerate(sources, 1)]
+            per_document = [index.retrieve(query, selected_document_ids=[d], limit=3) for d in scope]
+            per_document = sorted((hits for hits in per_document if hits), key=lambda hits: -hits[0].score)
+            # Round-robin (each file's best passage first) so the size budget
+            # below never drops a whole file.
+            for rank in range(3):
+                for hits in per_document:
+                    if rank < len(hits):
+                        sources.append(dataclasses.replace(hits[rank], number=len(sources) + 1))
         elif BROAD_REQUEST.search(question):
             # "Give me all information about land": more passages, spread across
             # files, so one long document cannot fill every slot.
@@ -195,6 +198,19 @@ def answer(index, question, selected, history, config, user_id, db_path):
         if index._is_summary_request(question):
             return 'Аль баримтыг хэлж байна вэ? Сонголтод харагдах #дугаар эсвэл бүтэн нэрийг бичнэ үү.', []
         return 'Сонгосон баримтуудаас тохирох хэсэг олдсонгүй. Асуултаа тодруулна уу. AI үйлчилгээ рүү хүсэлт илгээгээгүй.', []
+    # Keep the request inside the provider's size limit: best-ranked passages
+    # first, each at most 1500 characters, until the budget is used.
+    budget = max(2000, int(getattr(config, 'max_source_chars', 20000) or 20000))
+    trimmed, used_chars = [], 0
+    for source in sources:
+        text = source.context_text[:1500]
+        cost = len(text) + len(source.title) + len(source.page_label) + 60  # JSON fields too
+        if trimmed and used_chars + cost > budget:
+            continue
+        trimmed.append(dataclasses.replace(source, number=len(trimmed) + 1, context_text=text))
+        used_chars += cost
+    sources = trimmed
+
     def check_current_versions():
         with closing(open_database(db_path)) as conn:
             for source in sources:
@@ -241,7 +257,7 @@ previous_answer is only context for follow-up questions such as "what does that 
                 f"#{n}: {index.document_metadata[n]['title']}" for n in unmatched if n in index.document_metadata],
             'previous_answer': next((str(m.get('content',''))[:800] for m in reversed(history or []) if m.get('role') == 'assistant'), ''),
             'sources':[{'id':s.number,'document_id':s.document_id,'title':s.title,'location':s.page_label,
-                        'version':s.file_path,'text':s.context_text} for s in sources]}
+                        'text':s.context_text} for s in sources]}
     prompt += json.dumps(data,ensure_ascii=False)
     payload = generate(config,prompt,user_id,path=db_path)
     check_current_versions()

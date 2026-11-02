@@ -986,7 +986,8 @@ def ai_configuration():
         free_tier_confirmed=str(get_config_value('GROQ_FREE_TIER_CONFIRMED' if provider == 'groq' else 'GEMINI_FREE_TIER_CONFIRMED','false')).lower() == 'true',
         daily_limit=integer_setting('AI_DAILY_REQUEST_LIMIT',20,1000),
         user_daily_limit=integer_setting('AI_USER_DAILY_REQUEST_LIMIT',10,1000),
-        max_output=integer_setting('AI_MAX_OUTPUT_TOKENS',4096,8192))
+        max_output=integer_setting('AI_MAX_OUTPUT_TOKENS',3000 if provider == 'groq' else 4096,8192),
+        max_source_chars=integer_setting('AI_MAX_SOURCE_CHARS',9000 if provider == 'groq' else 20000,60000))
 
 
 def ai_settings_page():
