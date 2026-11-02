@@ -154,9 +154,9 @@ def answer(index, question, selected, history, config, user_id, db_path):
             # so the answer can say which files actually contain the topic.
             document_question = True
             for document_id in scope:
-                for source in index.retrieve(query, selected_document_ids=[document_id], limit=2):
+                for source in index.retrieve(query, selected_document_ids=[document_id], limit=3):
                     sources.append(dataclasses.replace(source, number=len(sources) + 1))
-            sources = sorted(sources, key=lambda source: -source.score)[:16]
+            sources = sorted(sources, key=lambda source: -source.score)[:18]
             sources = [dataclasses.replace(source, number=n) for n, source in enumerate(sources, 1)]
         elif BROAD_REQUEST.search(question):
             # "Give me all information about land": more passages, spread across
@@ -231,8 +231,9 @@ Each source has document_id: the #number users see. "File 4" or "#4" means docum
 named_documents_without_matching_passage lists files the user named where local search found
 nothing relevant. Do not write claims about them; the application reports them itself.
 If the user asks which or how many documents contain something, give one claim per document
-that really contains it (use the document title in the claim) and skip documents where the word
-only appears with another meaning (for example "Засгийн газар" means government, not land).
+that really contains it. Start the claim with the document title, then say in one sentence WHAT
+that document says about the topic (never just "the word appears"). Skip documents where the word
+only has another meaning: "Засгийн газар" = government, "ажлын газар"/"газарт ажиллах" = workplace.
 previous_answer is only context for follow-up questions such as "what does that mean?".
 '''
     data = {'question':question,'previous_user_questions': [str(m.get('content',''))[:500] for m in (history or [])[-4:] if m.get('role') == 'user'],
