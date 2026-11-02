@@ -507,6 +507,17 @@ def answer_system_question(question, selected_document_ids, documents):
             "Мөн файлын тоо, нэрсийг хэлж чадна."
         )
 
+    # "How many files mention land?" is a content question for the documents,
+    # not a question about the chat's selection: let the AI search it.
+    from rag_service import QUERY_STOPWORDS, ENGLISH_FOLLOW_UP_STOPWORDS
+    generic = {"хэдэн", "ямар", "нийт", "тоо", "тоог", "сонгосон", "чатад", "many", "number",
+               "selected", "there", "chat", "names", "нэрс", "нэрийг", "жагсаалт"}
+    topic_words = [w for w in re.findall(r"[0-9A-Za-zА-Яа-яЁёӨөҮү]+", normalised)
+                   if len(w) >= 4 and w not in QUERY_STOPWORDS and w not in ENGLISH_FOLLOW_UP_STOPWORDS
+                   and w not in generic and not w.startswith(("файл", "баримт", "file", "document"))]
+    if topic_words:
+        return None
+
     count_patterns = (
         "how many file", "how many document", "number of files", "хэдэн файл",
         "хэдэн баримт", "файлын тоо", "баримтын тоо"

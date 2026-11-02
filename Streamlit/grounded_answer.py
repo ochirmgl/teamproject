@@ -40,6 +40,8 @@ def quote_matches(quote, source_text):
     return True
 
 
+DOCUMENT_QUESTION = re.compile(r'хэдэн\s+(?:файл|баримт)|ямар\s+(?:файл|баримт)|аль\s+(?:файл|баримт)|'
+                               r'\b(?:how many|which|what)\s+(?:files?|documents?)\b', re.I)
 BROAD_REQUEST = re.compile(r'бүх|бүгд|жагсаа|дэлгэрэнгүй|\b(?:all|every|everything|list)\b', re.I)
 
 
@@ -131,6 +133,7 @@ def answer(index, question, selected, history, config, user_id, db_path):
     if is_summary and not mentioned and re.search(r'\b(?:all|these|selected)\b|бүх|сонгосон', question, re.I):
         mentioned = selected
     sources, unmatched = [], []
+    document_question = False
     if is_summary and mentioned:
         if len(mentioned) > 12:
             return 'Нэг удаа хамгийн ихдээ 12 баримтыг товчлоно. Цөөн баримт сонгоод дахин асууна уу.', []
@@ -146,6 +149,15 @@ def answer(index, question, selected, history, config, user_id, db_path):
                 for source in index.retrieve(query, selected_document_ids=[document_id], limit=per_file):
                     sources.append(dataclasses.replace(source, number=len(sources) + 1))
             unmatched = [n for n in mentioned if n not in {s.document_id for s in sources}]
+        elif DOCUMENT_QUESTION.search(question):
+            # "How many / which files mention land?": check every file separately
+            # so the answer can say which files actually contain the topic.
+            document_question = True
+            for document_id in scope:
+                for source in index.retrieve(query, selected_document_ids=[document_id], limit=2):
+                    sources.append(dataclasses.replace(source, number=len(sources) + 1))
+            sources = sorted(sources, key=lambda source: -source.score)[:16]
+            sources = [dataclasses.replace(source, number=n) for n, source in enumerate(sources, 1)]
         elif BROAD_REQUEST.search(question):
             # "Give me all information about land": more passages, spread across
             # files, so one long document cannot fill every slot.
@@ -218,6 +230,9 @@ a shorter exact quote is better than a longer altered one.
 Each source has document_id: the #number users see. "File 4" or "#4" means document_id 4.
 named_documents_without_matching_passage lists files the user named where local search found
 nothing relevant. Do not write claims about them; the application reports them itself.
+If the user asks which or how many documents contain something, give one claim per document
+that really contains it (use the document title in the claim) and skip documents where the word
+only appears with another meaning (for example "Засгийн газар" means government, not land).
 previous_answer is only context for follow-up questions such as "what does that mean?".
 '''
     data = {'question':question,'previous_user_questions': [str(m.get('content',''))[:500] for m in (history or [])[-4:] if m.get('role') == 'user'],
@@ -242,6 +257,11 @@ previous_answer is only context for follow-up questions such as "what does that 
         summary_notice = ('Summary of selected excerpts; it may not cover the complete document.' if english else
                           'Сонгон авсан хэсгүүдийн хураангуй; баримтын бүх заалтыг хамраагүй байж болно.')
         text = summary_notice + '\n\n' + text
+    if document_question and used:
+        found = list(dict.fromkeys(source.document_id for source in used))
+        names = '\n'.join(f"- #{d}: {index.document_metadata[d]['title']}" for d in found if d in index.document_metadata)
+        text = ((f'Found in {len(found)} document(s):' if english else f'{len(found)} баримтад холбогдох мэдээлэл олдлоо:')
+                + '\n' + names + '\n\n' + text)
     if unmatched:
         text += '\n\n' + ('No matching passage was found in: ' if english else 'Дараах баримтаас тохирох хэсэг олдсонгүй: ') + \
                 ', '.join(f"#{n} {index.document_metadata[n]['title']}" for n in unmatched if n in index.document_metadata)
