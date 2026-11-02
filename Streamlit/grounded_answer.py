@@ -34,6 +34,9 @@ def quote_matches(quote, source_text):
     return True
 
 
+BROAD_REQUEST = re.compile(r'бүх|бүгд|жагсаа|дэлгэрэнгүй|\b(?:all|every|everything|list)\b', re.I)
+
+
 class EvidenceError(AIError):
     """Generated evidence did not match the supplied original passage."""
 
@@ -137,6 +140,10 @@ def answer(index, question, selected, history, config, user_id, db_path):
                 for source in index.retrieve(query, selected_document_ids=[document_id], limit=per_file):
                     sources.append(dataclasses.replace(source, number=len(sources) + 1))
             unmatched = [n for n in mentioned if n not in {s.document_id for s in sources}]
+        elif BROAD_REQUEST.search(question):
+            # "Give me all information about land": more passages, spread across
+            # files, so one long document cannot fill every slot.
+            sources = index.retrieve(query, selected_document_ids=scope, limit=12, max_per_document=4)
         else:
             sources = index.retrieve(query,selected_document_ids=scope,limit=8)
         if not sources and explicit_reference:
@@ -178,6 +185,8 @@ If evidence does not answer the question, return not_found with no claims. Do no
 Report conflicting passages with conflict and cite both; do not choose a winner without evidence.
 Titles/dates alone do not prove a policy is currently valid. Flag explicit repeal/outdated statements.
 Match depth to the question, at most 12 claims. A single date/count needs a short answer.
+When the user asks for all information about a topic, give one claim per distinct relevant point
+and cover every source that is relevant to the topic, not only the first one; skip unrelated sources.
 For explanations and summaries, give a direct answer followed by the important supported conditions,
 responsibilities, dates and exceptions. Aim for 4-8 useful claims when the evidence supports them;
 never pad an answer or invent detail to reach that count. For how-to questions, give ordered steps

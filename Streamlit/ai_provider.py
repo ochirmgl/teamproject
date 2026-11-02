@@ -146,6 +146,9 @@ def generate(config, prompt, user_id, path=None):
         if not account:
             raise AIError('Дахин нэвтэрнэ үү.')
         cached = conn.execute("SELECT response_json FROM ai_requests WHERE cache_key=? AND status='complete' ORDER BY id DESC LIMIT 1",(key,)).fetchone()
+        # Never replay a cached "not found": asking again must get a fresh try.
+        if cached and json.loads(cached[0] or '{}').get('status') == 'not_found':
+            cached = None
         if cached:
             conn.rollback()
             config.last_response_kind = 'cache'

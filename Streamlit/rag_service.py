@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from functools import lru_cache
 import math
 import os
 from pathlib import Path
@@ -66,6 +67,14 @@ QUERY_STOPWORDS = {
     "detail", "detailed", "details", "steps", "step", "only", "please",
     "without", "invent", "provided", "source", "sources", "document", "documents",
     "оноос", "онд", "эхлэн", "гол", "агуулгыг", "агуулгын",
+    # Generic request words. "холбоотой" (related) matched almost every
+    # passage and pushed the real topic ("газар") out of the results.
+    "холбоотой", "холбогдолтой", "холбогдох", "холбогдсон", "бүх", "бүгд",
+    "бүгдийг", "файл", "файлаас", "файлууд", "файлуудаас", "файлуудад",
+    "файлын", "баримтаас", "баримтууд", "баримтуудаас", "баримтуудад",
+    "өгөөч", "хэлээч", "хэлнэ", "жагсаа", "жагсаалт", "мэдээллүүд",
+    "мэдээллүүдийг", "related", "regarding", "all", "every", "everything",
+    "give", "list", "info", "file", "files",
 }
 
 
@@ -238,6 +247,21 @@ def _split_text(text: str, max_chars: int = 1500, overlap: int = 220) -> list[st
     return chunks
 
 
+_VOWELS = set("аэиоуөүеёюяыaeiouy")
+
+
+@lru_cache(maxsize=200_000)
+def _skeleton(word: str) -> str:
+    """First two letters plus the first three consonants: газар/газрын/газраа → га|гзр."""
+    consonants = [ch for ch in word if ch not in _VOWELS][:3]
+    return word[:2] + "|" + "".join(consonants)
+
+
+def _same_stem(a: str, b: str) -> bool:
+    """Mongolian drops a stem vowel before many suffixes (газар → газрын, ажил → ажлын)."""
+    return _skeleton(a) == _skeleton(b) and len(_skeleton(a)) >= 6
+
+
 def _tokenise(text: str) -> tuple[str, ...]:
     """Word and character tokens work reasonably well with Mongolian suffixes."""
     words = [word.lower() for word in WORD_PATTERN.findall(text)]
@@ -388,6 +412,7 @@ class DocumentRAG:
         question: str,
         selected_document_ids: Iterable[int] | None = None,
         limit: int = 3,
+        max_per_document: int | None = None,
     ) -> list[RetrievedSource]:
         if not self.chunks:
             return []
@@ -430,7 +455,8 @@ class DocumentRAG:
             frequencies = Counter(chunk.tokens)
             chunk_words = {token for token in frequencies if not token.startswith("#")}
             # Mongolian inflections often share stems but not exact words.
-            matched_words = sum(any(a == word or (min(len(a),len(word)) >= 5 and a[:5] == word[:5])
+            matched_words = sum(any(a == word or (min(len(a),len(word)) >= 5 and
+                                                  (a[:5] == word[:5] or _same_stem(a, word)))
                                     for word in chunk_words) for a in query_words)
             # Conservative lexical relevance: one generic shared word is not
             # enough evidence for a question with several distinct concepts.
@@ -474,8 +500,21 @@ class DocumentRAG:
         seen = set()
         scored = [(score,chunk) for score,chunk in scored if not (chunk.text in seen or seen.add(chunk.text))]
         if scored:
-            relative_cutoff = scored[0][0] * 0.35
-            top_items = [item for item in scored if item[0] >= relative_cutoff][:limit]
+            # Broad "all information about X" requests keep every passage that
+            # passed the concept filter above, so other files are not cut just
+            # because one file's title repeats the topic word.
+            relative_cutoff = 0.0 if max_per_document else scored[0][0] * 0.35
+            candidates = [item for item in scored if item[0] >= relative_cutoff]
+            if max_per_document:
+                per_document: Counter = Counter()
+                top_items = []
+                for item in candidates:
+                    if per_document[item[1].document_id] < max_per_document:
+                        per_document[item[1].document_id] += 1
+                        top_items.append(item)
+                top_items = top_items[:limit]
+            else:
+                top_items = candidates[:limit]
         else:
             top_items = []
 
