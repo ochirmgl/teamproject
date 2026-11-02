@@ -20,9 +20,15 @@ def normalized(text):
 
 
 def quote_matches(quote, source_text):
-    """Exact match, also allowing the model to elide text with '...' between exact parts."""
-    quote, source_text = normalized(quote), normalized(source_text)
-    parts = [part.strip(' "') for part in re.split(r'\.\.\.|…', quote) if part.strip(' "')]
+    """Same words and numbers in the same order; letter case and punctuation may differ.
+    The model may also elide text with '...' between exact parts."""
+    def words_only(text):
+        # Keep letters, digits and decimal/section points between digits (5.1.6).
+        text = re.sub(r'(?<=\d)[.,](?=\d)', '§', normalized(text).casefold())
+        return ' '.join(re.sub(r'[^\w§]+', ' ', text).split())
+    source_text = words_only(source_text)
+    parts = [words_only(part) for part in re.split(r'\.\.\.|…', quote)]
+    parts = [part for part in parts if part]
     if not parts or sum(len(part) for part in parts) < 8:
         return False
     position = 0

@@ -195,8 +195,22 @@ def make_document_signature(records):
     return tuple(signature)
 
 
-@st.cache_resource(show_spinner=False)
-def build_rag_index(document_signature):
+def rag_code_version():
+    """Changes whenever the search/answer code changes. Streamlit Cloud can reload
+    code without restarting, which kept an index object built by the OLD class."""
+    import hashlib
+    import rag_service
+    digest = hashlib.sha256()
+    for module in (rag_service, processing):
+        try:
+            digest.update(Path(module.__file__).read_bytes())
+        except (OSError, TypeError):
+            pass
+    return digest.hexdigest()
+
+
+@st.cache_resource(show_spinner=False, max_entries=3)
+def build_rag_index(document_signature, code_version=None):
     records = [
         {
             "id": item[0],
@@ -1228,7 +1242,7 @@ if st.session_state.logged_in:
             st.button('Бүх баримтаас асуух', key='use_all_chat_docs', on_click=set_selection, args=(list(document_map),))
 
         document_signature = make_document_signature(documents)
-        rag_index = build_rag_index(document_signature)
+        rag_index = build_rag_index(document_signature, rag_code_version())
         config = ai_configuration()
         provider_ready = config.provider == 'ollama' or (config.provider in ('gemini','groq') and config.api_key and config.free_tier_confirmed)
 
@@ -1315,6 +1329,9 @@ if st.session_state.logged_in:
                     response = str(error)
                     st.error(response)
                 except Exception:
+                    # Visible in Streamlit Cloud → Manage app → logs.
+                    import logging
+                    logging.getLogger(__name__).exception('AI chat request failed')
                     request_failed = True
                     response = 'Хүсэлтийг гүйцэтгэж чадсангүй. Асуулт хадгалагдсан. Дахин оролдоно уу.'
                     st.error(response)
