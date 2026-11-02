@@ -143,7 +143,17 @@ def answer(index, question, selected, history, config, user_id, db_path):
         elif BROAD_REQUEST.search(question):
             # "Give me all information about land": more passages, spread across
             # files, so one long document cannot fill every slot.
-            sources = index.retrieve(query, selected_document_ids=scope, limit=12, max_per_document=4)
+            topic_docs = index.topic_documents(question, scope)[:2]
+            if topic_docs:
+                # A file whose title is the topic (the land law for "газар"): sample
+                # across the whole file for an overview, instead of the few short
+                # paragraphs that repeat the word most often.
+                sources = list(index._summary_sources(topic_docs))
+                others = [d for d in scope if d not in topic_docs]
+                for source in index.retrieve(query, selected_document_ids=others, limit=4, max_per_document=2) if others else []:
+                    sources.append(dataclasses.replace(source, number=len(sources) + 1))
+            else:
+                sources = index.retrieve(query, selected_document_ids=scope, limit=12, max_per_document=4)
         else:
             sources = index.retrieve(query,selected_document_ids=scope,limit=8)
         if not sources and explicit_reference:

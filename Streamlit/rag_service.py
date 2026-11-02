@@ -550,6 +550,26 @@ class DocumentRAG:
             )
         return sources
 
+    def topic_documents(self, question: str, selected_document_ids: Iterable[int] | None) -> list[int]:
+        """Documents whose title names the question's topic (e.g. "газар" → the land law)."""
+        english = {'land':'газар','salary':'цалин','leave':'амралт','vacation':'амралт',
+                   'travel':'томилолт','investment':'хөрөнгө','contract':'гэрээ'}
+        concepts = {english.get(word, word) for word in (w.lower() for w in WORD_PATTERN.findall(question))
+                    if len(word) >= 4 and word not in QUERY_STOPWORDS
+                    and word not in ENGLISH_FOLLOW_UP_STOPWORDS}
+        if not concepts:
+            return []
+        matches = []
+        for document_id in sorted(self._selected_ids(selected_document_ids)):
+            metadata = self.document_metadata.get(document_id)
+            if not metadata:
+                continue
+            title_words = {w.lower() for w in WORD_PATTERN.findall(metadata['title']) if len(w) >= 4}
+            if any(c == t or (min(len(c), len(t)) >= 5 and (c[:5] == t[:5] or _same_stem(c, t)))
+                   for c in concepts for t in title_words):
+                matches.append(document_id)
+        return matches
+
     def _selected_ids(self, selected_document_ids: Iterable[int] | None) -> set[int]:
         return {int(value) for value in selected_document_ids} if selected_document_ids is not None else set(self.document_ids)
 

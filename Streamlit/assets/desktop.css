@@ -42,6 +42,8 @@
 [role="option"]:hover {background:var(--canvas)!important;}
 [role="dialog"] h2,[role="dialog"] h3,[role="dialog"] h4,
 [role="dialog"] p,[role="dialog"] label {color:var(--ink)!important;}
+/* st.text keeps Streamlit's theme colour; with a dark OS theme that was white on our white panel. */
+[data-testid="stText"],[data-testid="stText"] * {color:var(--ink)!important;}
 [role="dialog"] button[aria-label="Close"] {color:var(--ink)!important;}
 [data-testid="stCheckbox"] label:has(input[role="switch"]) > div:first-of-type {background:#8a98ae!important;border:1px solid #697a92!important;}
 [data-testid="stCheckbox"] label:has(input[role="switch"]:checked) > div:first-of-type {background:var(--blue)!important;border-color:var(--blue)!important;}
